@@ -1,0 +1,12 @@
+{
+  "name": "collab-write",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "dev:server": "npm run dev --workspace @collab-write/server",
+    "dev:web": "npm run dev --workspace @collab-write/web"
+  }
+}
