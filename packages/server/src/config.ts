@@ -1,5 +1,6 @@
 export interface ServerConfig {
   port: number;
+  isProd: boolean;
   databaseUrl: string;
   /** Optional — without it the node runs standalone (no cross-node sync). */
   redisUrl: string | undefined;
@@ -15,8 +16,12 @@ export interface ServerConfig {
 
 export function configFromEnv(): ServerConfig {
   const isProd = process.env.NODE_ENV === "production";
+  if (isProd && !process.env.SESSION_SECRET) {
+    throw new Error("SESSION_SECRET must be set in production");
+  }
   return {
     port: Number(process.env.PORT ?? 3001),
+    isProd,
     databaseUrl: process.env.DATABASE_URL ?? "postgres://localhost:5432/collabwrite",
     redisUrl: process.env.REDIS_URL,
     sessionSecret: process.env.SESSION_SECRET ?? "dev-only-secret",

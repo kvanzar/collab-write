@@ -146,6 +146,14 @@ export class RGADocument {
   }
 
   /**
+   * The ID of the visible char at an index (for anchoring cursors to
+   * identity instead of position), or undefined if out of range.
+   */
+  charIdAtVisibleIndex(visibleIndex: number): CharId | undefined {
+    return this.visibleCharAt(visibleIndex)?.id;
+  }
+
+  /**
    * Position of a char among visible chars, or -1 if deleted/unknown.
    * The editor binding uses this to turn a remote op into a screen update.
    */

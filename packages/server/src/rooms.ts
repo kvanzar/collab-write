@@ -1,11 +1,20 @@
 import { WebSocket } from "ws";
-import { RGADocument, type Operation, type ServerMessage } from "@collab-write/crdt-core";
+import {
+  RGADocument,
+  type Operation,
+  type PeerPresence,
+  type ServerMessage,
+} from "@collab-write/crdt-core";
 import type { Db } from "./db.js";
-import type { PubSub } from "./pubsub.js";
+import type { PubSub, PubSubPayload } from "./pubsub.js";
 
 export interface Room {
   doc: RGADocument;
   sockets: Set<WebSocket>;
+  /** Presence of clients connected to THIS node, keyed by socket. */
+  localPresence: Map<WebSocket, PeerPresence>;
+  /** Presence of clients on OTHER nodes, learned via pub/sub. */
+  remotePresence: Map<string, PeerPresence>;
   /** Highest op-log row id this room has persisted (snapshot cut point). */
   lastOpId: number;
   opsSinceSnapshot: number;
@@ -48,9 +57,16 @@ export class RoomManager {
     const tail = await this.db.loadOpsAfter(docId, lastOpId);
     for (const op of tail) doc.apply(op);
 
-    const room: Room = { doc, sockets: new Set(), lastOpId: 0, opsSinceSnapshot: 0 };
-    // Start receiving other nodes' ops for this document.
-    await this.pubsub.subscribe(docId, (op) => this.applyFromPeerNode(docId, room, op));
+    const room: Room = {
+      doc,
+      sockets: new Set(),
+      localPresence: new Map(),
+      remotePresence: new Map(),
+      lastOpId: 0,
+      opsSinceSnapshot: 0,
+    };
+    // Start receiving other nodes' traffic for this document.
+    await this.pubsub.subscribe(docId, (payload) => this.applyFromPeerNode(room, payload));
     return room;
   }
 
@@ -63,7 +79,7 @@ export class RoomManager {
     room.doc.apply(op);
     const rowId = await this.db.appendOperation(docId, op);
     this.broadcastLocal(room, { type: "op", op }, from);
-    this.pubsub.publish(docId, op);
+    this.pubsub.publish(docId, { kind: "op", op });
 
     if (rowId !== null) {
       room.lastOpId = Math.max(room.lastOpId, rowId);
@@ -75,14 +91,47 @@ export class RoomManager {
     }
   }
 
-  /** An op published by a peer node: memory + local fan-out only. */
-  private applyFromPeerNode(docId: string, room: Room, op: Operation): void {
-    room.doc.apply(op); // idempotent — duplicate delivery is harmless
-    this.broadcastLocal(room, { type: "op", op });
+  /** Presence from one of OUR clients: remember, fan out, publish. */
+  presenceFromClient(docId: string, room: Room, ws: WebSocket, peer: PeerPresence): void {
+    room.localPresence.set(ws, peer);
+    this.broadcastLocal(room, { type: "presence", peer }, ws);
+    this.pubsub.publish(docId, { kind: "presence", peer });
+  }
+
+  /** Everyone currently in the doc except the given socket's own entry. */
+  peersFor(room: Room, except?: WebSocket): PeerPresence[] {
+    const peers: PeerPresence[] = [];
+    for (const [ws, p] of room.localPresence) if (ws !== except) peers.push(p);
+    peers.push(...room.remotePresence.values());
+    return peers;
+  }
+
+  /** Traffic published by a peer node: memory + local fan-out only. */
+  private applyFromPeerNode(room: Room, payload: PubSubPayload): void {
+    switch (payload.kind) {
+      case "op":
+        room.doc.apply(payload.op); // idempotent — duplicates are harmless
+        this.broadcastLocal(room, { type: "op", op: payload.op });
+        break;
+      case "presence":
+        room.remotePresence.set(payload.peer.clientId, payload.peer);
+        this.broadcastLocal(room, { type: "presence", peer: payload.peer });
+        break;
+      case "presence-left":
+        room.remotePresence.delete(payload.clientId);
+        this.broadcastLocal(room, { type: "presence-left", clientId: payload.clientId });
+        break;
+    }
   }
 
   async leave(docId: string, room: Room, ws: WebSocket): Promise<void> {
     room.sockets.delete(ws);
+    const peer = room.localPresence.get(ws);
+    room.localPresence.delete(ws);
+    if (peer) {
+      this.broadcastLocal(room, { type: "presence-left", clientId: peer.clientId });
+      this.pubsub.publish(docId, { kind: "presence-left", clientId: peer.clientId });
+    }
     if (room.sockets.size === 0) {
       // Evict idle rooms so a node's memory tracks its active docs, not
       // every doc it has ever seen. Postgres has the durable copy.

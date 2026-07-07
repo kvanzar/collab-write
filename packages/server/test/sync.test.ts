@@ -3,6 +3,7 @@ import { WebSocket } from "ws";
 import {
   RGADocument,
   type ClientMessage,
+  type PeerPresence,
   type ServerMessage,
 } from "@collab-write/crdt-core";
 import { createServer, type CollabServer } from "../src/index.js";
@@ -14,6 +15,7 @@ const REDIS = "redis://localhost:6379";
 function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
   return {
     port: 0,
+    isProd: false,
     databaseUrl: TEST_DB,
     redisUrl: undefined,
     sessionSecret: "test-secret",
@@ -48,10 +50,16 @@ async function createDoc(port: number, cookie: string, title: string): Promise<s
 /** Authenticated collab client — same protocol dance as the browser. */
 class TestClient {
   readonly doc: RGADocument;
+  readonly peers = new Map<string, PeerPresence>();
   private ws: WebSocket;
   private synced: Promise<void>;
 
-  constructor(port: number, docId: string, clientId: string, cookie: string) {
+  constructor(
+    port: number,
+    docId: string,
+    readonly clientId: string,
+    cookie: string,
+  ) {
     this.doc = new RGADocument(clientId);
     this.ws = new WebSocket(`ws://localhost:${port}/ws`, { headers: { cookie } });
     this.synced = new Promise((resolve, reject) => {
@@ -61,12 +69,22 @@ class TestClient {
       });
       this.ws.on("message", (raw) => {
         const msg = JSON.parse(raw.toString()) as ServerMessage;
-        if (msg.type === "sync") {
-          for (const op of msg.ops) this.doc.apply(op);
-          for (const op of this.doc.opsSince(msg.vector)) this.send({ type: "op", op });
-          resolve();
-        } else {
-          this.doc.apply(msg.op);
+        switch (msg.type) {
+          case "sync":
+            for (const op of msg.ops) this.doc.apply(op);
+            for (const op of this.doc.opsSince(msg.vector)) this.send({ type: "op", op });
+            for (const peer of msg.peers) this.peers.set(peer.clientId, peer);
+            resolve();
+            break;
+          case "op":
+            this.doc.apply(msg.op);
+            break;
+          case "presence":
+            this.peers.set(msg.peer.clientId, msg.peer);
+            break;
+          case "presence-left":
+            this.peers.delete(msg.clientId);
+            break;
         }
       });
     });
@@ -80,6 +98,17 @@ class TestClient {
     for (let i = 0; i < text.length; i++) {
       this.send({ type: "op", op: this.doc.localInsert(index + i, text[i]) });
     }
+  }
+
+  sendPresence(name: string, color: string, cursorIndex: number | null): void {
+    const cursor =
+      cursorIndex === null
+        ? null
+        : { afterId: cursorIndex === 0 ? null : (this.doc.charIdAtVisibleIndex(cursorIndex - 1) ?? null) };
+    this.send({
+      type: "presence",
+      peer: { clientId: this.clientId, name, color, cursor },
+    });
   }
 
   close(): void {
@@ -193,6 +222,63 @@ describe("persistence (op-log + snapshots)", () => {
     );
     expect(rows[0].n).toBe(1);
     alice.close();
+  });
+});
+
+describe("presence (ephemeral cursors)", () => {
+  test("peers see each other's cursors; presence is never persisted", async () => {
+    const node = await bootNode();
+    const cookie = await login(node.port, "Alice");
+    const docId = await createDoc(node.port, cookie, "presence doc");
+
+    const alice = new TestClient(node.port, docId, "alice-p", cookie);
+    await alice.join();
+    alice.type(0, "hi");
+    alice.sendPresence("Alice", "#e11", 2);
+
+    // Late joiner receives current presence in the sync reply.
+    const cookieB = await login(node.port, "Bob");
+    const bob = new TestClient(node.port, docId, "bob-p", cookieB);
+    await bob.join();
+    await waitUntil(() => bob.peers.has("alice-p"));
+    expect(bob.peers.get("alice-p")!.name).toBe("Alice");
+
+    // Cursor anchored to a CharId, not an index.
+    expect(bob.peers.get("alice-p")!.cursor?.afterId).toEqual(
+      alice.doc.charIdAtVisibleIndex(1),
+    );
+
+    // Disconnect notifies peers.
+    alice.close();
+    await waitUntil(() => !bob.peers.has("alice-p"));
+
+    // Ephemeral: only the 2 typed chars hit the op-log, nothing from presence.
+    const { rows } = await node.db.pool.query(
+      "SELECT count(*)::int AS n FROM operations WHERE document_id = $1",
+      [docId],
+    );
+    expect(rows[0].n).toBe(2);
+    bob.close();
+  });
+
+  test("presence crosses nodes via Redis", async () => {
+    const nodeA = await bootNode({ redisUrl: REDIS });
+    const nodeB = await bootNode({ redisUrl: REDIS });
+    const cookieA = await login(nodeA.port, "Alice");
+    const cookieB = await login(nodeB.port, "Bob");
+    const docId = await createDoc(nodeA.port, cookieA, "cross-node presence");
+
+    const alice = new TestClient(nodeA.port, docId, "alice-x", cookieA);
+    await alice.join();
+    const bob = new TestClient(nodeB.port, docId, "bob-x", cookieB);
+    await bob.join();
+
+    alice.sendPresence("Alice", "#e11", 0);
+    await waitUntil(() => bob.peers.has("alice-x"));
+    expect(bob.peers.get("alice-x")!.color).toBe("#e11");
+
+    alice.close();
+    bob.close();
   });
 });
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Editor } from "./Editor.js";
+import { colorFor } from "./presence.js";
 
 // One replica identity per tab, for the life of the tab.
 const clientId = crypto.randomUUID();
@@ -28,35 +29,40 @@ export function App() {
   }, []);
 
   return (
-    <main style={{ maxWidth: 760, margin: "40px auto", fontFamily: "system-ui, sans-serif" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h1 style={{ cursor: "pointer" }} onClick={() => (window.location.hash = "")}>
-          CollabWrite
-        </h1>
+    <>
+      <header className="topbar">
+        <div className="logo" onClick={() => (window.location.hash = "")}>
+          Collab<span>Write</span>
+        </div>
         {user && (
-          <span>
-            {user.name}{" "}
+          <div className="userchip">
+            <span className="avatar" style={{ background: colorFor(user.id) }}>
+              {user.name[0]?.toUpperCase()}
+            </span>
+            {user.name}
             <button
+              className="btn-ghost"
               onClick={async () => {
                 await fetch("/api/auth/logout", { method: "POST" });
+                window.location.hash = "";
                 setUser(null);
               }}
             >
-              sign out
+              Sign out
             </button>
-          </span>
+          </div>
         )}
       </header>
-      {user === undefined ? (
-        <p>Loading…</p>
-      ) : user === null ? (
-        <Login onLogin={setUser} />
-      ) : docId ? (
-        <Editor docId={docId} clientId={clientId} />
-      ) : (
-        <DocList />
-      )}
-    </main>
+      <div className="container">
+        {user === undefined ? null : user === null ? (
+          <Login onLogin={setUser} />
+        ) : docId ? (
+          <Editor docId={docId} clientId={clientId} userName={user.name} />
+        ) : (
+          <DocList />
+        )}
+      </div>
+    </>
   );
 }
 
@@ -77,33 +83,52 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
     if (r.ok) onLogin(await r.json());
   }
 
-  if (!methods) return <p>Loading…</p>;
   return (
-    <section>
-      <h2>Sign in</h2>
-      {methods.google && (
-        <p>
-          <a href="/api/auth/google">Sign in with Google</a>
-        </p>
-      )}
-      {methods.dev && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void devLogin();
-          }}
-        >
-          <input
-            placeholder="your name (dev login)"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <button type="submit" disabled={!name.trim()}>
-            enter
-          </button>
-        </form>
-      )}
-    </section>
+    <div className="login-wrap">
+      <div className="login-card">
+        <h1>
+          Collab<span style={{ color: "var(--accent)" }}>Write</span>
+        </h1>
+        <p className="tagline">Write together, in real time. Conflict-free.</p>
+        {!methods ? (
+          <p>Loading…</p>
+        ) : (
+          <>
+            {methods.google && (
+              <a className="google-btn" href="/api/auth/google">
+                <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+                  <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.7 2.4 30.2 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.8 6.1C12.3 13.4 17.7 9.5 24 9.5z" />
+                  <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z" />
+                  <path fill="#FBBC05" d="M10.4 28.7a14.4 14.4 0 0 1 0-9.4l-7.8-6.1a24 24 0 0 0 0 21.6l7.8-6.1z" />
+                  <path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.3-5.6l-7.5-5.8c-2.1 1.4-4.7 2.2-7.8 2.2-6.3 0-11.7-3.9-13.6-9.4l-7.8 6.1C6.5 42.6 14.6 48 24 48z" />
+                </svg>
+                Sign in with Google
+              </a>
+            )}
+            {methods.google && methods.dev && <div className="divider">or</div>}
+            {methods.dev && (
+              <form
+                className="login-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void devLogin();
+                }}
+              >
+                <input
+                  className="textinput"
+                  placeholder="Your name (dev login)"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+                <button className="btn btn-primary" type="submit" disabled={!name.trim()}>
+                  Enter
+                </button>
+              </form>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -111,9 +136,9 @@ function DocList() {
   const [docs, setDocs] = useState<Doc[]>();
   const [title, setTitle] = useState("");
 
-  const refresh = () =>
+  useEffect(() => {
     fetch("/api/documents").then(async (r) => setDocs(await r.json()));
-  useEffect(() => void refresh(), []);
+  }, []);
 
   async function create() {
     const r = await fetch("/api/documents", {
@@ -129,35 +154,43 @@ function DocList() {
 
   return (
     <section>
-      <h2>Your documents</h2>
+      <h2 className="page-title">Your documents</h2>
       <form
+        className="create-row"
         onSubmit={(e) => {
           e.preventDefault();
           void create();
         }}
-        style={{ marginBottom: 16 }}
       >
         <input
-          placeholder="new document title"
+          className="textinput"
+          placeholder="Start a new document…"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
-        <button type="submit" disabled={!title.trim()}>
-          create
+        <button className="btn btn-primary" type="submit" disabled={!title.trim()}>
+          Create
         </button>
       </form>
       {!docs ? (
         <p>Loading…</p>
       ) : docs.length === 0 ? (
-        <p style={{ color: "#666" }}>No documents yet — create one above.</p>
+        <div className="empty-state">No documents yet — create your first one above.</div>
       ) : (
-        <ul>
+        <div className="doc-grid">
           {docs.map((d) => (
-            <li key={d.id}>
-              <a href={`#${d.id}`}>{d.title}</a>
-            </li>
+            <a key={d.id} className="doc-card" href={`#${d.id}`}>
+              <div className="title">{d.title}</div>
+              <div className="date">
+                {new Date(d.created_at).toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}
+              </div>
+            </a>
           ))}
-        </ul>
+        </div>
       )}
     </section>
   );

@@ -59,10 +59,13 @@ export function attachWebSocket(
             type: "sync",
             ops: room.doc.opsSince(msg.vector),
             vector: room.doc.versionVector(),
+            peers: rooms.peersFor(room, ws),
           }),
         );
       } else if (msg.type === "op" && joined) {
         await rooms.applyFromClient(joined.docId, joined.room, msg.op, ws);
+      } else if (msg.type === "presence" && joined) {
+        rooms.presenceFromClient(joined.docId, joined.room, ws, msg.peer);
       }
     });
 
