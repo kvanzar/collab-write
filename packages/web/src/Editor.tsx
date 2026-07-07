@@ -6,7 +6,9 @@ import { CollabSession } from "./collab.js";
 /** Tags editor changes that came from the network, so we don't re-send them. */
 const remoteChange = Annotation.define<boolean>();
 
-const WS_URL = "ws://localhost:3001";
+// Same-origin through the Vite proxy, so the session cookie authenticates
+// the upgrade. Adapts to wss:// automatically when the page is https.
+const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 
 export function Editor({ docId, clientId }: { docId: string; clientId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
